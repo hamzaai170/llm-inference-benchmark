@@ -34,12 +34,22 @@ Charts: `results/throughput.png`, `results/energy.png`, `results/size.png`, `res
 - **bf16 halves model size and cuts peak memory by 43% (Qwen) and 47% (TinyLlama) with no perplexity change, but was slower** (16% and 26% fewer tokens/s) and used more estimated energy on this CPU, which has no native bf16 acceleration.
 - **Efficiency claims need a quality measure beside them.** The most energy-efficient configurations here are also the lowest-quality ones.
 
+## Follow-up: selective int8 (`int8sel`)
+Hypothesis: the large perplexity increase comes from quantising the output head. Test: quantise only the `Linear` layers inside the transformer blocks and keep the head in fp32. Same settings as above, run later on a separate Colab instance.
+
+| Model | Precision | Size MB | Peak mem MB | TTFT s | Tokens/s | Wh / 1k tok | WikiText-2 PPL |
+|---|---|---|---|---|---|---|---|
+| Qwen2.5-0.5B-Instruct | int8sel | 902.90 | 5006.90 | 0.46 | 6.95 | 0.54 | 168.14 |
+| TinyLlama-1.1B-Chat-v1.0 | int8sel | 1493.70 | 10893.80 | 0.94 | 5.98 | 0.61 | 76.27 |
+
+**Result: the hypothesis was not supported.** Perplexity stayed close to `int8dyn` (168.1 vs 174.8 for Qwen; 76.3 vs 77.8 for TinyLlama) and far above fp32 (21.7 and 11.8). So the quality loss is not mainly caused by the output head; it comes from quantising the transformer-block layers with this simple per-tensor dynamic scheme (the exact cause was not isolated). For Qwen, keeping the large-vocabulary head in fp32 also made generation slower and more energy-hungry than `int8dyn` in these runs (6.95 vs 9.49 tokens/s; 0.54 vs 0.39 Wh per 1,000 tokens); for TinyLlama the two were about the same. Timings come from separate runs on shared hardware, so small differences are within noise.
+
 ## Limitations (please read)
 - Small pilot: 9 prompts, 48 new tokens, ten perplexity windows, **one run per configuration**, no repeats or confidence intervals.
 - Shared cloud CPU. Timings and energy can vary between runs and instances.
 - **Energy is a CodeCarbon software estimate, not a power-meter measurement.** Use it to compare rows with each other, not as an absolute figure.
 - **Int8 peak memory is misleading.** The script loads the fp32 model first and then quantises it, so the peak includes the full-size copy. Use model size for int8 memory claims.
-- The int8dyn setting quantises *all* `Linear` layers, including the output head (`lm_head`), which is likely a main cause of the large perplexity increase. A selective variant (`int8sel`, transformer blocks only) is included in the script; see below.
+- The int8dyn setting quantises *all* `Linear` layers, including the output head. A selective variant (`int8sel`, transformer blocks only, output head kept in fp32) was tested to check whether the head was the cause; it was not (see "Follow-up" below). The cause of the quality loss was not isolated further.
 - Perplexity on WikiText-2 is a rough quality proxy and says little about instruction-following or domain performance.
 
 ## Reproduce
@@ -57,4 +67,4 @@ python llm_inference_benchmark.py --device cpu --models Qwen/Qwen2.5-0.5B-Instru
 Expect roughly 15 to 70 minutes on a free Colab CPU depending on the model list.
 
 ## Next steps
-Repeat runs with confidence intervals; measure power with hardware counters instead of an estimate; add GPU precisions (fp16, 8-bit, 4-bit); evaluate task quality on domain prompts instead of perplexity alone.
+Try quantisation schemes that handle outlier weights better (per-channel, weight-only, calibration-based) to see whether the quality loss can be reduced; repeat runs with confidence intervals; measure power with hardware counters instead of an estimate; add GPU precisions (fp16, 8-bit, 4-bit); evaluate task quality on domain prompts instead of perplexity alone.
